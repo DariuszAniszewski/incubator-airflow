@@ -14,12 +14,14 @@ class GCFFunctionCreateOperator(BaseOperator):
                  function_name,
                  project_id,
                  region,
+                 runtime='node6',
                  function_zip_local_path=None,
                  function_zip_gcs_path=None,
                  *args, **kwargs):
         self.function_name = function_name
         self.project_id = project_id
         self.region = region
+        self.runtime = runtime
         self.function_zip_local_path = function_zip_local_path
         self.function_zip_gcs_path = function_zip_gcs_path
         super(GCFFunctionCreateOperator, self).__init__(*args, **kwargs)
@@ -30,8 +32,14 @@ class GCFFunctionCreateOperator(BaseOperator):
         location = 'projects/{}/locations/{}'.format(self.project_id, self.region)
         function_name = '{}/functions/{}'.format(location, self.function_name)
 
+        for _function in hook.list_functions(location):
+            if _function["name"] == function_name:
+                print("Function already exists")
+                return
+
         function_create_body = {
             'name': function_name,
+            'runtime': self.runtime,
             'httpsTrigger': {}
         }
         if self.function_zip_local_path:

@@ -19,3 +19,7 @@ class GCFHook(GoogleCloudBaseHook):
         return build(
             'cloudfunctions', self.api_version, http=http_authorized,
             cache_discovery=False)
+
+    def list_functions(self, location):
+        list_response = self.get_conn().projects().locations().functions().list(parent=location).execute()
+        return list_response.get("functions", [])
