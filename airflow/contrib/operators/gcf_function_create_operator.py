@@ -1,80 +1,63 @@
-import requests
-from time import sleep
-
-from airflow.contrib.hooks.gcf_hook import GCFHook
 from airflow.models import BaseOperator
+from airflow.contrib.hooks.gcf_hook import GCFHook
 from airflow.utils.decorators import apply_defaults
 
 
 class GCFFunctionCreateOperator(BaseOperator):
-    template_fields = ['cluster_name', 'project_id', 'zone', 'region']
-
     @apply_defaults
     def __init__(self,
                  function_name,
                  project_id,
                  region,
-                 runtime='node6',
+                 entrypoint,
+                 runtime='nodejs6',
                  function_zip_local_path=None,
                  function_zip_gcs_path=None,
                  *args, **kwargs):
-        self.function_name = function_name
+        super(GCFFunctionCreateOperator, self).__init__(*args, **kwargs)
         self.project_id = project_id
         self.region = region
+        self.entrypoint = entrypoint
         self.runtime = runtime
         self.function_zip_local_path = function_zip_local_path
         self.function_zip_gcs_path = function_zip_gcs_path
-        super(GCFFunctionCreateOperator, self).__init__(*args, **kwargs)
+        self.location = 'projects/{}/locations/{}'.format(self.project_id, self.region)
+        self.function_name = '{}/functions/{}'.format(self.location, function_name)
 
-    def execute(self, context):
-        hook = GCFHook()
-        service = hook.get_conn()
-        location = 'projects/{}/locations/{}'.format(self.project_id, self.region)
-        function_name = '{}/functions/{}'.format(location, self.function_name)
-
-        for _function in hook.list_functions(location):
-            if _function["name"] == function_name:
-                print("Function already exists")
-                return
-
-        function_create_body = {
-            'name': function_name,
+    def _prepare_function_body(self, hook):
+        body = {
+            'name': self.function_name,
             'runtime': self.runtime,
+            'entryPoint': self.entrypoint,
             'httpsTrigger': {}
         }
         if self.function_zip_local_path:
-            rsp = service.projects().locations().functions().generateUploadUrl(
-                parent='projects/{}/locations/{}'.format(self.project_id, self.region)
-            ).execute()  # TODO: move to hook
-            uploadURL = rsp.get('uploadUrl')
-
-            with open(self.function_zip_local_path, 'rb') as fp:
-                requests.put(
-                    uploadURL,
-                    data=fp.read(),
-                    headers={
-                        'Content-type': 'application/zip',
-                        'x-goog-content-length-range': '0,104857600',
-                    }
-                )
-            function_create_body['sourceUploadUrl'] = uploadURL
+            upload_url = hook.upload_function_zip(self.location, self.function_zip_local_path)
+            body['sourceUploadUrl'] = upload_url
         elif self.function_zip_gcs_path:
-            function_create_body['sourceArchiveUrl'] = self.function_zip_gcs_path
+            body['sourceArchiveUrl'] = self.function_zip_gcs_path
         else:
             # TODO sourceRepository
             raise AttributeError("Missing source")
+        return body
 
-        service.projects().locations().functions().create(
-            location=location,
-            body=function_create_body
-        ).execute()  # TODO: move to hook
+    def _create_new_function(self, hook):
+        body = self._prepare_function_body(hook)
+        hook.create_new_function(self.location, body)
 
-        while True:
-            f = service.projects().locations().functions().get(name=function_name).execute()  # TODO: move to hook
-            status = f.get('status')
-            print(status)
-            if status == 'ACTIVE':
-                break
-            sleep(1)
+    def _update_function(self, hook):
+        body = self._prepare_function_body(hook)
+        hook.update_function(self.function_name, body, body.keys())
 
-        return 'DONE'
+    def _check_if_function_exists(self, hook):
+        return self.function_name in map(
+            lambda x: x["name"], hook.list_functions(self.location)
+        )
+
+    def execute(self, context):
+        hook = GCFHook()
+
+        if not self._check_if_function_exists(hook):
+            self._create_new_function(hook)
+        else:
+            self._update_function(hook)
